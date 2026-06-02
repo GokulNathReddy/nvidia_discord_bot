@@ -55,9 +55,9 @@ Supported actions and their params:
 If the command is entirely unclear, return: { "action": "unknown", "params": {} }`;
 
 const FREE_MODELS = [
+    "google/gemma-4-31b-it:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "nousresearch/hermes-3-llama-3.1-405b:free",
-    "google/gemma-4-31b-it:free",
     "nvidia/nemotron-nano-12b-v2-vl:free"
 ];
 
