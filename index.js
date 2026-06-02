@@ -48,35 +48,54 @@ Supported actions and their params:
 - reply: { message: string } (Use this action if the user is asking a general question, asking you to generate text, or requesting something that doesn't fit the moderation actions above. Put your full response in the 'message' param.)
 If the command is entirely unclear, return: { "action": "unknown", "params": {} }`;
 
+const FREE_MODELS = [
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free"
+];
+
 async function callOpenRouter(prompt) {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-            "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            model: "nousresearch/hermes-3-llama-3.1-405b:free",
-            messages: [
-                { role: "system", content: SYSTEM_PROMPT },
-                { role: "user", content: prompt }
-            ],
-            response_format: { type: "json_object" }
-        })
-    });
+    for (const model of FREE_MODELS) {
+        try {
+            const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    model: model,
+                    messages: [
+                        { role: "system", content: SYSTEM_PROMPT },
+                        { role: "user", content: prompt }
+                    ],
+                    response_format: { type: "json_object" }
+                })
+            });
 
-    if (!response.ok) {
-        throw new Error(`OpenRouter API error: ${response.statusText}`);
+            if (response.status === 429) {
+                console.log(`[${new Date().toISOString()}] Model ${model} is rate limited, trying next...`);
+                continue; // Try the next model
+            }
+
+            if (!response.ok) {
+                throw new Error(`API returned ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            let content = data.choices[0].message.content.trim();
+            
+            if (content.startsWith('```json')) content = content.slice(7);
+            if (content.startsWith('```')) content = content.slice(3);
+            if (content.endsWith('```')) content = content.slice(0, -3);
+
+            return JSON.parse(content.trim());
+        } catch (err) {
+            console.log(`[${new Date().toISOString()}] Attempt with ${model} failed: ${err.message}`);
+        }
     }
-
-    const data = await response.json();
-    let content = data.choices[0].message.content.trim();
-    
-    if (content.startsWith('```json')) content = content.slice(7);
-    if (content.startsWith('```')) content = content.slice(3);
-    if (content.endsWith('```')) content = content.slice(0, -3);
-
-    return JSON.parse(content.trim());
+    throw new Error("All free AI models are currently overloaded. Please try again in a few seconds.");
 }
 
 // Action Handlers
