@@ -56,7 +56,7 @@ async function callOpenRouter(prompt) {
             "Content-Type": "application/json"
         },
         body: JSON.stringify({
-            model: "nvidia/llama-3.1-nemotron-ultra-253b-v1:free",
+            model: "nousresearch/hermes-3-llama-3.1-405b:free",
             messages: [
                 { role: "system", content: SYSTEM_PROMPT },
                 { role: "user", content: prompt }
