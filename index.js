@@ -79,10 +79,11 @@ User: "what is the capital of France?"
 {"action":"reply","params":{"message":"The capital of France is Paris."}}`;
 
 const FREE_MODELS = [
-    "google/gemma-4-31b-it:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free",
-    "nvidia/nemotron-nano-12b-v2-vl:free"
+    "meta-llama/llama-3.3-70b-instruct:free",   // Meta's best, excellent instruction following
+    "moonshotai/kimi-k2.6:free",                  // Great at structured JSON output
+    "openai/gpt-oss-120b:free",                   // OpenAI-trained, superb JSON adherence
+    "qwen/qwen3-next-80b-a3b-instruct:free",      // Strong structured output fallback
+    "nousresearch/hermes-3-llama-3.1-405b:free"  // Reliable last resort
 ];
 
 async function callOpenRouter(prompt) {
@@ -90,9 +91,8 @@ async function callOpenRouter(prompt) {
         try {
             console.log(`[${new Date().toISOString()}] Trying model: ${model}`);
 
-            // Hard 15-second timeout per model attempt
             const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 15000);
+            const timeout = setTimeout(() => controller.abort(), 20000);
 
             let response;
             try {
@@ -105,13 +105,12 @@ async function callOpenRouter(prompt) {
                     },
                     body: JSON.stringify({
                         model: model,
-                        max_tokens: 400,
+                        max_tokens: 512,
                         temperature: 0.1,
                         messages: [
                             { role: "system", content: SYSTEM_PROMPT },
                             { role: "user", content: prompt }
                         ]
-                        // No response_format — not supported by all free models and causes hangs
                     })
                 });
             } finally {
