@@ -64,44 +64,73 @@ const FREE_MODELS = [
 async function callOpenRouter(prompt) {
     for (const model of FREE_MODELS) {
         try {
-            const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    model: model,
-                    messages: [
-                        { role: "system", content: SYSTEM_PROMPT },
-                        { role: "user", content: prompt }
-                    ],
-                    response_format: { type: "json_object" }
-                })
-            });
+            console.log(`[${new Date().toISOString()}] Trying model: ${model}`);
+
+            // Hard 15-second timeout per model attempt
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+
+            let response;
+            try {
+                response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                    method: "POST",
+                    signal: controller.signal,
+                    headers: {
+                        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        max_tokens: 400,
+                        temperature: 0.1,
+                        messages: [
+                            { role: "system", content: SYSTEM_PROMPT },
+                            { role: "user", content: prompt }
+                        ]
+                        // No response_format — not supported by all free models and causes hangs
+                    })
+                });
+            } finally {
+                clearTimeout(timeout);
+            }
 
             if (response.status === 429) {
-                console.log(`[${new Date().toISOString()}] Model ${model} is rate limited, trying next...`);
-                continue; // Try the next model
+                console.log(`[${new Date().toISOString()}] ${model} rate limited, trying next...`);
+                continue;
             }
 
             if (!response.ok) {
-                throw new Error(`API returned ${response.statusText}`);
+                console.log(`[${new Date().toISOString()}] ${model} returned ${response.status}, trying next...`);
+                continue;
             }
 
             const data = await response.json();
-            let content = data.choices[0].message.content.trim();
-            
-            if (content.startsWith('```json')) content = content.slice(7);
-            if (content.startsWith('```')) content = content.slice(3);
-            if (content.endsWith('```')) content = content.slice(0, -3);
+            let content = data?.choices?.[0]?.message?.content?.trim();
+            if (!content) {
+                console.log(`[${new Date().toISOString()}] ${model} returned empty content, trying next...`);
+                continue;
+            }
 
-            return JSON.parse(content.trim());
+            // Robustly extract JSON from anywhere in the response
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+                console.log(`[${new Date().toISOString()}] ${model} returned no JSON, trying next... Raw: ${content.slice(0, 100)}`);
+                continue;
+            }
+
+            const parsed = JSON.parse(jsonMatch[0]);
+            console.log(`[${new Date().toISOString()}] Success with model: ${model}`);
+            return parsed;
+
         } catch (err) {
-            console.log(`[${new Date().toISOString()}] Attempt with ${model} failed: ${err.message}`);
+            if (err.name === 'AbortError') {
+                console.log(`[${new Date().toISOString()}] ${model} timed out after 15s, trying next...`);
+            } else {
+                console.log(`[${new Date().toISOString()}] ${model} error: ${err.message}`);
+            }
         }
     }
-    throw new Error("All free AI models are currently overloaded. Please try again in a few seconds.");
+    throw new Error("All AI models are currently overloaded or timed out. Please try again in a moment.");
 }
 
 // Action Handlers
