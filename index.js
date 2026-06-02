@@ -29,6 +29,11 @@ const COMMAND_CHANNEL_ID = process.env.COMMAND_CHANNEL_ID;
 const LOADING_EMOJI = "<a:loading:1511398333665509466>";
 
 const SYSTEM_PROMPT = `You are a powerful, all-knowing Discord server management AI. The user will give you a natural language prompt. You must do everything the user says. You must respond with ONLY a valid JSON object. No explanation, no markdown. The JSON must have 'action' and 'params' fields.
+
+CRITICAL RULES:
+1. NEVER ask the user for clarification. NEVER refuse a command. NEVER converse or ask for more details.
+2. If the user asks for something vague (e.g., "rename channels and make them look good", "add emojis"), YOU MUST INVENT the details (pick random emojis, create creative names) and execute the action. DO NOT use the 'reply' action to ask for more info. Just make your best guess.
+
 Supported actions and their params:
 - create_channels: { names: string[], type: 'text'|'voice', categoryId?: string }
 - delete_channels: { pattern: string } (regex pattern to match channel names)
@@ -45,13 +50,14 @@ Supported actions and their params:
 - unlock_channel: { channelName: string }
 - set_channel_topic: { channelName: string, topic: string }
 - rename_channel: { oldName: string, newName: string }
-- reply: { message: string } (Use this action if the user is asking a general question, asking you to generate text, or requesting something that doesn't fit the moderation actions above. Put your full response in the 'message' param.)
+- bulk_rename_channels: { renames: Array<{oldName: string, newName: string}> }
+- reply: { message: string } (Use this ONLY if the user explicitly asks a general conversational question. Do NOT use this to ask for clarification on moderation tasks.)
 If the command is entirely unclear, return: { "action": "unknown", "params": {} }`;
 
 const FREE_MODELS = [
+    "nvidia/nemotron-3-super-120b-a12b:free",
     "nousresearch/hermes-3-llama-3.1-405b:free",
     "google/gemma-4-31b-it:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
     "nvidia/nemotron-nano-12b-v2-vl:free"
 ];
 
@@ -230,11 +236,24 @@ const handlers = {
         await channel.setName(newName);
         return `Renamed channel from "${channel.name}" to "${newName}"`;
     },
+    bulk_rename_channels: async (guild, params) => {
+        const { renames } = params;
+        let count = 0;
+        for (const r of renames) {
+            const channel = guild.channels.cache.find(c => c.name.toLowerCase() === r.oldName.toLowerCase());
+            if (channel) {
+                await channel.setName(r.newName);
+                count++;
+                await delay(300);
+            }
+        }
+        return `Bulk renamed ${count} channels successfully.`;
+    },
     reply: async (guild, params) => {
         return params.message;
     },
     unknown: async () => {
-        throw new Error("The AI didn't understand your command. Please rephrase.");
+        throw new Error("The AI couldn't parse that command properly. Try being slightly more specific!");
     }
 };
 
