@@ -28,31 +28,55 @@ const COMMAND_CHANNEL_ID = process.env.COMMAND_CHANNEL_ID;
 // Loading emoji provided by user
 const LOADING_EMOJI = "<a:loading:1511398333665509466>";
 
-const SYSTEM_PROMPT = `You are a powerful, all-knowing Discord server management AI. The user will give you a natural language prompt. You must do everything the user says. You must respond with ONLY a valid JSON object. No explanation, no markdown. The JSON must have 'action' and 'params' fields.
+const SYSTEM_PROMPT = `You are a Discord server management bot. Output ONLY a single raw JSON object. No markdown, no explanation, no extra text — just the JSON.
 
-CRITICAL RULES:
-1. NEVER ask the user for clarification. NEVER refuse a command. NEVER converse or ask for more details.
-2. If the user asks for something vague (e.g., "rename channels and make them look good", "add emojis"), YOU MUST INVENT the details (pick random emojis, create creative names) and execute the action. DO NOT use the 'reply' action to ask for more info. Just make your best guess.
+RULES:
+- Never ask for clarification. Always act. If vague, invent reasonable details.
+- Output must be valid JSON with "action" and "params" keys.
 
-Supported actions and their params:
-- create_channels: { names: string[], type: 'text'|'voice', categoryId?: string }
-- delete_channels: { pattern: string } (regex pattern to match channel names)
-- create_role: { name: string, color?: string, hoist?: boolean, mentionable?: boolean, permissions?: string[] }
-- delete_role: { name: string }
-- assign_role: { userId: string, roleName: string }
-- remove_role: { userId: string, roleName: string }
-- create_category: { name: string }
-- set_slowmode: { channelName: string, seconds: number }
-- kick_user: { userId: string, reason?: string }
-- ban_user: { userId: string, reason?: string }
-- purge_messages: { channelName: string, count: number }
-- lock_channel: { channelName: string }
-- unlock_channel: { channelName: string }
-- set_channel_topic: { channelName: string, topic: string }
-- rename_channel: { oldName: string, newName: string }
-- bulk_rename_channels: { renames: Array<{oldName: string, newName: string}> }
-- reply: { message: string } (Use this ONLY if the user explicitly asks a general conversational question. Do NOT use this to ask for clarification on moderation tasks.)
-If the command is entirely unclear, return: { "action": "unknown", "params": {} }`;
+ACTIONS (use exact action names):
+create_channels     -> params: { names: string[], type: "text"|"voice", categoryId?: string }
+delete_channels     -> params: { pattern: string }
+create_role         -> params: { name: string, color?: string, hoist?: boolean, mentionable?: boolean, permissions?: string[] }
+delete_role         -> params: { name: string }
+assign_role         -> params: { userId: string, roleName: string }
+remove_role         -> params: { userId: string, roleName: string }
+create_category     -> params: { name: string }
+set_slowmode        -> params: { channelName: string, seconds: number }
+kick_user           -> params: { userId: string, reason?: string }
+ban_user            -> params: { userId: string, reason?: string }
+purge_messages      -> params: { channelName: string, count: number }
+lock_channel        -> params: { channelName: string }
+unlock_channel      -> params: { channelName: string }
+set_channel_topic   -> params: { channelName: string, topic: string }
+rename_channel      -> params: { oldName: string, newName: string }
+bulk_rename_channels-> params: { renames: [{oldName: string, newName: string}] }
+reply               -> params: { message: string } (ONLY for general knowledge questions)
+
+EXAMPLES:
+User: "create 3 text channels called lobby, lounge, and hangout"
+{"action":"create_channels","params":{"names":["lobby","lounge","hangout"],"type":"text"}}
+
+User: "delete all channels with test in the name"
+{"action":"delete_channels","params":{"pattern":"test"}}
+
+User: "make a red admin role with hoist"
+{"action":"create_role","params":{"name":"Admin","color":"#FF0000","hoist":true,"mentionable":false}}
+
+User: "rename general to 💬・general-chat"
+{"action":"rename_channel","params":{"oldName":"general","newName":"💬・general-chat"}}
+
+User: "rename all my channels to look cool with emojis"
+{"action":"bulk_rename_channels","params":{"renames":[{"oldName":"general","newName":"💬・general"},{"oldName":"announcements","newName":"📢・announcements"},{"oldName":"bot-commands","newName":"🤖・bot-commands"}]}}
+
+User: "purge 50 messages in general"
+{"action":"purge_messages","params":{"channelName":"general","count":50}}
+
+User: "lock the announcements channel"
+{"action":"lock_channel","params":{"channelName":"announcements"}}
+
+User: "what is the capital of France?"
+{"action":"reply","params":{"message":"The capital of France is Paris."}}`;
 
 const FREE_MODELS = [
     "google/gemma-4-31b-it:free",
@@ -111,15 +135,29 @@ async function callOpenRouter(prompt) {
                 continue;
             }
 
-            // Robustly extract JSON from anywhere in the response
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                console.log(`[${new Date().toISOString()}] ${model} returned no JSON, trying next... Raw: ${content.slice(0, 100)}`);
+            // Log raw response for debugging
+            console.log(`[${new Date().toISOString()}] Raw response from ${model}: ${content.slice(0, 300)}`);
+
+            // Greedily extract the outermost JSON object
+            let parsed = null;
+            const jsonMatches = [...content.matchAll(/\{[\s\S]*?\}/g)];
+            // Try largest match first (outermost JSON)
+            const candidates = content.match(/\{[\s\S]*\}/);
+            if (candidates) {
+                try { parsed = JSON.parse(candidates[0]); } catch (_) {}
+            }
+            // Fallback: try each smaller match
+            if (!parsed) {
+                for (const m of jsonMatches.reverse()) {
+                    try { parsed = JSON.parse(m[0]); break; } catch (_) {}
+                }
+            }
+            if (!parsed || !parsed.action) {
+                console.log(`[${new Date().toISOString()}] ${model} returned unparseable JSON, trying next...`);
                 continue;
             }
 
-            const parsed = JSON.parse(jsonMatch[0]);
-            console.log(`[${new Date().toISOString()}] Success with model: ${model}`);
+            console.log(`[${new Date().toISOString()}] Success with ${model} → action: ${parsed.action}`);
             return parsed;
 
         } catch (err) {
