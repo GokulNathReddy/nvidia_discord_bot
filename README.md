@@ -4,12 +4,15 @@ A Discord bot that uses natural language processing to manage your server. Power
 
 ## Features
 - **Natural language commands** — just describe what you want in plain English
+- **Conversation memory** — reply to the bot's message to follow up without needing `sudo` (e.g., bot suggests something → you reply "yes do it" → bot executes)
 - **Multi-step sequences** — create a category, add channels to it, and create roles in one command
 - **Parallel execution** — independent tasks run simultaneously for speed
 - **Destructive action confirmation** — ban, kick, delete require button confirmation
 - **Rollback support** — undo the last action with `sudo rollback`
 - **Action history** — review recent operations with `sudo history`
 - **Smart model fallback** — cascades through multiple AI models if one fails
+- **Custom prompt instructions** — customize the AI's behavior with `/prompt`
+- **Bot statistics** — monitor uptime, command usage, and model performance with `/stats`
 
 ## Prerequisites
 - **Node.js**: Version 18.0.0 or higher (uses native `fetch`).
@@ -52,8 +55,15 @@ Send a natural language command prefixed with `sudo`:
 | Multi-step | `sudo create a Gaming category, add voice channels lobby and squad-1 inside it, and create a Gamer role in green` |
 | General Q&A | `sudo what is 2+2?` |
 
-### Slash Command
-Use `/mod_ai_agent` with the `prompt` option for the same functionality.
+### Conversation Follow-ups
+When the bot replies with a suggestion (e.g., *"I can rename them with special characters or emojis if you'd like!"*), simply **reply to that message** with "yes", "do it", "go ahead", etc. — no `sudo` prefix needed. The bot remembers the conversation context and will execute what it suggested.
+
+### Slash Commands
+| Command | Description |
+|---------|-------------|
+| `/mod_ai_agent` | Run an AI moderator command with a natural language prompt |
+| `/stats` | View bot statistics — uptime, commands processed, model usage, memory |
+| `/prompt` | View, customize, or reset the AI's system prompt behavior |
 
 ### Built-in Commands
 - `sudo help` — Show the help menu

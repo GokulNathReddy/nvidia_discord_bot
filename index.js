@@ -45,6 +45,16 @@ const client = new Client({
     ]
 });
 
+// ─── Stats Tracking ─────────────────────────────────────────────────────────
+const botStartTime = Date.now();
+const stats = {
+    commandsProcessed: 0,
+    commandsSucceeded: 0,
+    commandsFailed: 0,
+    modelsUsed: {},     // model -> count
+    lastModelUsed: null
+};
+
 // ─── Action History ─────────────────────────────────────────────────────────
 const actionHistory = [];
 const MAX_HISTORY = 50;
@@ -53,6 +63,51 @@ function addToHistory(entry) {
     actionHistory.unshift(entry);
     if (actionHistory.length > MAX_HISTORY) actionHistory.pop();
 }
+
+// ─── Conversation Memory ────────────────────────────────────────────────────
+// Stores recent conversation context per channel so the bot can remember
+// what it said and respond to follow-up replies.
+const conversationMemory = new Map(); // channelId -> { messages: [{role, content}], lastActivity: timestamp }
+const MAX_MEMORY_MESSAGES = 10;       // Keep last 10 exchanges per channel
+const MEMORY_EXPIRY_MS = 10 * 60 * 1000; // Forget after 10 minutes of inactivity
+
+function getConversationContext(channelId) {
+    const memory = conversationMemory.get(channelId);
+    if (!memory) return '';
+    // Check if expired
+    if (Date.now() - memory.lastActivity > MEMORY_EXPIRY_MS) {
+        conversationMemory.delete(channelId);
+        return '';
+    }
+    return memory.messages
+        .map(m => `${m.role === 'user' ? 'USER' : 'BOT'}: ${m.content}`)
+        .join('\n');
+}
+
+function addToConversationMemory(channelId, role, content) {
+    if (!conversationMemory.has(channelId)) {
+        conversationMemory.set(channelId, { messages: [], lastActivity: Date.now() });
+    }
+    const memory = conversationMemory.get(channelId);
+    memory.messages.push({ role, content: content.slice(0, 500) }); // Cap per-message length
+    if (memory.messages.length > MAX_MEMORY_MESSAGES) {
+        memory.messages = memory.messages.slice(-MAX_MEMORY_MESSAGES);
+    }
+    memory.lastActivity = Date.now();
+}
+
+// Periodically clean expired memories (every 5 minutes)
+setInterval(() => {
+    const now = Date.now();
+    for (const [channelId, memory] of conversationMemory) {
+        if (now - memory.lastActivity > MEMORY_EXPIRY_MS) {
+            conversationMemory.delete(channelId);
+        }
+    }
+}, 5 * 60 * 1000);
+
+// ─── Custom prompt storage ──────────────────────────────────────────────────
+let customPromptSuffix = ''; // User can append custom instructions via /prompt
 
 // ─── Destructive actions needing confirmation ───────────────────────────────
 const DESTRUCTIVE_ACTIONS = new Set([
@@ -97,7 +152,8 @@ Recent bot actions:\n${recentActions}`;
 }
 
 // ─── System Prompt ──────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are a Discord server management bot. You receive the server's current state and a user command.
+function buildSystemPrompt() {
+    let prompt = `You are a Discord server management bot. You receive the server's current state and a user command.
 You MUST output ONLY a raw JSON object — no markdown, no explanation, no code fences, no extra text before or after.
 
 CRITICAL RULES:
@@ -109,6 +165,9 @@ CRITICAL RULES:
 6. Use exact channel/role names from the SERVER STATE when referencing existing channels or roles.
 7. Channel and role names in the server state include their IDs in parentheses — use the NAME (not the ID) in your params unless a param specifically asks for an ID.
 8. For general knowledge questions, fun questions, or anything not related to server management, use the "reply" action with a helpful answer.
+9. IMPORTANT — CONVERSATION CONTEXT: You may receive a CONVERSATION HISTORY showing previous exchanges. If the user's message is a follow-up (like "yes", "do it", "go ahead", "sure", "yeah rename them"), look at your PREVIOUS reply in the conversation history to understand what was suggested, and EXECUTE that suggestion as actions. For example, if you previously replied "I can rename them with special characters", and the user says "yes do it", you should actually perform the rename.
+10. When you offer a suggestion in a reply (like "I can do X if you'd like"), and the user confirms, you MUST execute X — do NOT just reply again. Turn the suggestion into real actions.
+11. Discord does NOT support custom fonts for channel/category names. But you CAN use Unicode special characters (ᴜᴘᴘᴇʀᴄᴀsᴇ, 𝗯𝗼𝗹𝗱, 𝘪𝘵𝘢𝘭𝘪𝘤, etc.), emojis, and special symbols to make names look unique. When asked to "change font" or "make it look cool", use these Unicode alternatives and emojis.
 
 AVAILABLE ACTIONS:
 create_channels:       {names:string[], type:"text"|"voice", categoryId?:string}
@@ -137,6 +196,12 @@ sequence:              {steps:[{action:string, params:object}]}
 parallel:              {steps:[{action:string, params:object}]}
 
 Output ONLY the JSON object. No other text.`;
+
+    if (customPromptSuffix) {
+        prompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${customPromptSuffix}`;
+    }
+    return prompt;
+}
 
 // ─── Few-shot examples ──────────────────────────────────────────────────────
 const FEW_SHOT_EXAMPLES = [
@@ -256,8 +321,13 @@ function safeRegex(pattern) {
 }
 
 // ─── Call OpenRouter with model fallback + retries ──────────────────────────
-async function callOpenRouter(userPrompt, serverContext) {
-    const userMessage = `${serverContext}\n\nUSER COMMAND: ${userPrompt}`;
+async function callOpenRouter(userPrompt, serverContext, conversationContext) {
+    let userMessage = `${serverContext}\n\nUSER COMMAND: ${userPrompt}`;
+
+    // Inject conversation history if available
+    if (conversationContext) {
+        userMessage = `${serverContext}\n\nCONVERSATION HISTORY (recent exchanges in this channel):\n${conversationContext}\n\nUSER COMMAND: ${userPrompt}`;
+    }
 
     for (const model of MODELS) {
         // Try each model up to 2 times (in case of transient JSON issues)
@@ -268,7 +338,7 @@ async function callOpenRouter(userPrompt, serverContext) {
                 const timeout = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
                 const messages = [
-                    { role: "system", content: SYSTEM_PROMPT },
+                    { role: "system", content: buildSystemPrompt() },
                     ...FEW_SHOT_EXAMPLES,
                     { role: "user", content: userMessage }
                 ];
@@ -324,6 +394,8 @@ async function callOpenRouter(userPrompt, serverContext) {
                 const parsed = extractJSON(content);
                 if (parsed) {
                     console.log(`[${ts()}] ✅ ${model} → ${parsed.action}`);
+                    stats.lastModelUsed = model;
+                    stats.modelsUsed[model] = (stats.modelsUsed[model] || 0) + 1;
                     return parsed;
                 }
 
@@ -867,14 +939,21 @@ async function confirmDestructiveAction(ctx, action, params, steps) {
 }
 
 // ─── Core Processor ─────────────────────────────────────────────────────────
-async function processAICommand(prompt, ctx, guild) {
+async function processAICommand(prompt, ctx, guild, channelId) {
+    stats.commandsProcessed++;
     try {
         const serverContext = buildServerContext(guild);
         console.log(`[${ts()}] 📝 Command: "${prompt}"`);
 
+        // Store the user's message in conversation memory
+        if (channelId) addToConversationMemory(channelId, 'user', prompt);
+
+        // Get conversation context for follow-up handling
+        const conversationContext = channelId ? getConversationContext(channelId) : '';
+
         let aiResponse;
         try {
-            aiResponse = await callOpenRouter(prompt, serverContext);
+            aiResponse = await callOpenRouter(prompt, serverContext, conversationContext);
         } catch (err) {
             return await editReply(ctx, {
                 content: '',
@@ -909,6 +988,8 @@ async function processAICommand(prompt, ctx, guild) {
                     .setFooter({ text: '↩️ Use "sudo rollback" to undo last action' })
                     .setTimestamp();
                 await editReply(ctx, { content: '', embeds: [embed], components: [] });
+                stats.commandsSucceeded++;
+                if (channelId) addToConversationMemory(channelId, 'bot', resultText.slice(0, 300));
             } catch (err) {
                 console.error(`[${ts()}] Sequence error:`, err);
                 await editReply(ctx, {
@@ -948,6 +1029,8 @@ async function processAICommand(prompt, ctx, guild) {
                     .setFooter({ text: '↩️ Use "sudo rollback" to undo last action' })
                     .setTimestamp();
                 await editReply(ctx, { content: '', embeds: [embed], components: [] });
+                stats.commandsSucceeded++;
+                if (channelId) addToConversationMemory(channelId, 'bot', resultText.slice(0, 300));
             } catch (err) {
                 console.error(`[${ts()}] Parallel error:`, err);
                 await editReply(ctx, {
@@ -995,8 +1078,13 @@ async function processAICommand(prompt, ctx, guild) {
 
             await editReply(ctx, { content: '', embeds: [embed], components: [] });
             console.log(`[${ts()}] ✅ ${action}: ${resultText}`);
+            stats.commandsSucceeded++;
+
+            // Store bot's response in conversation memory
+            if (channelId) addToConversationMemory(channelId, 'bot', resultText);
         } catch (err) {
             console.error(`[${ts()}] ❌ Execution error:`, err);
+            stats.commandsFailed++;
             await editReply(ctx, {
                 content: '',
                 embeds: [new EmbedBuilder().setColor('#e74c3c').setTitle('❌ Execution Error').setDescription(err.message)],
@@ -1022,12 +1110,33 @@ client.on('ready', async () => {
                 opt.setName('prompt')
                     .setDescription('Your command in natural language')
                     .setRequired(true)
+            ),
+        new SlashCommandBuilder()
+            .setName('stats')
+            .setDescription('Show bot statistics — uptime, commands processed, model usage'),
+        new SlashCommandBuilder()
+            .setName('prompt')
+            .setDescription('View or customize the AI system prompt behavior')
+            .addStringOption(opt =>
+                opt.setName('action')
+                    .setDescription('What to do')
+                    .setRequired(true)
+                    .addChoices(
+                        { name: 'View current prompt', value: 'view' },
+                        { name: 'Set custom instructions', value: 'set' },
+                        { name: 'Clear custom instructions', value: 'clear' }
+                    )
+            )
+            .addStringOption(opt =>
+                opt.setName('instructions')
+                    .setDescription('Custom instructions to append (only for "set" action)')
+                    .setRequired(false)
             )
     ].map(c => c.toJSON());
 
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log(`[${ts()}] ✅ Slash commands registered`);
+        console.log(`[${ts()}] ✅ Slash commands registered (mod_ai_agent, stats, prompt)`);
     } catch (err) {
         console.error(`[${ts()}] Slash command registration failed:`, err);
     }
@@ -1035,7 +1144,99 @@ client.on('ready', async () => {
 
 // ─── Slash Commands ─────────────────────────────────────────────────────────
 client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== 'mod_ai_agent') return;
+    if (!interaction.isChatInputCommand()) return;
+
+    // ── /stats ──
+    if (interaction.commandName === 'stats') {
+        if (!hasPermission(interaction.member, interaction.user.id)) {
+            return interaction.reply({ content: '🚫 No permission.', ephemeral: true });
+        }
+
+        const uptimeMs = Date.now() - botStartTime;
+        const hours = Math.floor(uptimeMs / 3600000);
+        const minutes = Math.floor((uptimeMs % 3600000) / 60000);
+        const seconds = Math.floor((uptimeMs % 60000) / 1000);
+        const uptimeStr = `${hours}h ${minutes}m ${seconds}s`;
+
+        const modelLines = Object.entries(stats.modelsUsed)
+            .sort((a, b) => b[1] - a[1])
+            .map(([model, count]) => {
+                const shortName = model.split('/').pop();
+                return `\`${shortName}\`: ${count} call${count !== 1 ? 's' : ''}`;
+            }).join('\n') || 'No models used yet';
+
+        const memUsage = process.memoryUsage();
+        const memMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
+
+        const embed = new EmbedBuilder()
+            .setColor('#76b900') // NVIDIA green
+            .setTitle('📊 Bot Statistics')
+            .addFields(
+                { name: '⏱️ Uptime', value: uptimeStr, inline: true },
+                { name: '📝 Commands Processed', value: `${stats.commandsProcessed}`, inline: true },
+                { name: '✅ Succeeded', value: `${stats.commandsSucceeded}`, inline: true },
+                { name: '❌ Failed', value: `${stats.commandsFailed}`, inline: true },
+                { name: '🔄 Rollbackable Actions', value: `${actionHistory.filter(h => h.canRollback).length}`, inline: true },
+                { name: '💬 Active Conversations', value: `${conversationMemory.size}`, inline: true },
+                { name: '🤖 Model Usage', value: modelLines, inline: false },
+                { name: '🧠 Last Model Used', value: stats.lastModelUsed ? `\`${stats.lastModelUsed.split('/').pop()}\`` : 'None', inline: true },
+                { name: '💾 Memory', value: `${memMB} MB`, inline: true },
+                { name: '🏠 Servers', value: `${client.guilds.cache.size}`, inline: true }
+            )
+            .setFooter({ text: `Node.js ${process.version} • discord.js v14` })
+            .setTimestamp();
+
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    // ── /prompt ──
+    if (interaction.commandName === 'prompt') {
+        if (!hasPermission(interaction.member, interaction.user.id)) {
+            return interaction.reply({ content: '🚫 No permission.', ephemeral: true });
+        }
+
+        const action = interaction.options.getString('action');
+
+        if (action === 'view') {
+            const fullPrompt = buildSystemPrompt();
+            // Truncate for display (Discord embed limit is 4096)
+            const displayPrompt = fullPrompt.length > 3900
+                ? fullPrompt.slice(0, 3900) + '\n\n... (truncated)'
+                : fullPrompt;
+
+            const embed = new EmbedBuilder()
+                .setColor('#3498db')
+                .setTitle('🧠 Current System Prompt')
+                .setDescription(`\`\`\`\n${displayPrompt}\n\`\`\``)
+                .setFooter({ text: customPromptSuffix ? '⚙️ Custom instructions are active' : '📋 Using default prompt' });
+
+            return interaction.reply({ embeds: [embed], ephemeral: true });
+        }
+
+        if (action === 'set') {
+            const instructions = interaction.options.getString('instructions');
+            if (!instructions) {
+                return interaction.reply({ content: '❌ Please provide instructions to set. Use `/prompt action:set instructions:"your custom rules"`', ephemeral: true });
+            }
+            customPromptSuffix = instructions.slice(0, 1000); // Cap at 1000 chars
+            const embed = new EmbedBuilder()
+                .setColor('#2ecc71')
+                .setTitle('✅ Custom Instructions Set')
+                .setDescription(`Your custom instructions have been appended to the system prompt:\n\n> ${customPromptSuffix}`)
+                .setFooter({ text: 'Use /prompt action:clear to remove' });
+            return interaction.reply({ embeds: [embed] });
+        }
+
+        if (action === 'clear') {
+            customPromptSuffix = '';
+            return interaction.reply({
+                embeds: [new EmbedBuilder().setColor('#e74c3c').setTitle('🗑️ Custom Instructions Cleared').setDescription('System prompt is back to defaults.')]
+            });
+        }
+    }
+
+    // ── /mod_ai_agent ──
+    if (interaction.commandName !== 'mod_ai_agent') return;
     if (!hasPermission(interaction.member, interaction.user.id)) {
         return interaction.reply({ content: '🚫 No permission.', ephemeral: true });
     }
@@ -1045,7 +1246,7 @@ client.on('interactionCreate', async interaction => {
     // deferReply gives us 15 minutes instead of the 3-second window
     await interaction.deferReply();
     await interaction.editReply(`${LOADING_EMOJI} Processing: *"${prompt}"*`);
-    await processAICommand(prompt, interaction, interaction.guild);
+    await processAICommand(prompt, interaction, interaction.guild, interaction.channelId);
 });
 
 // ─── Message Handler ────────────────────────────────────────────────────────
@@ -1055,6 +1256,23 @@ client.on('messageCreate', async message => {
     if (!hasPermission(message.member, message.author.id)) return;
 
     const content = message.content.trim();
+
+    // ── Reply-to-bot-message: conversation follow-up ──
+    // If the user replies to one of the bot's messages, treat it as a follow-up command
+    // even without the "sudo" prefix. This enables the "yes do it" workflow.
+    if (message.reference && !(/^sudo\s+/i.test(content))) {
+        try {
+            const refMsg = await message.channel.messages.fetch(message.reference.messageId);
+            if (refMsg.author.id === client.user.id) {
+                // This is a reply to the bot — treat as a follow-up
+                const processingMsg = await message.reply(`${LOADING_EMOJI} Processing follow-up: *"${content}"*`);
+                await processAICommand(content, processingMsg, message.guild, message.channel.id);
+                return;
+            }
+        } catch {
+            // Couldn't fetch reference message, fall through to normal handling
+        }
+    }
 
     // ── sudo rollback ──
     if (/^sudo\s+rollback$/i.test(content)) {
@@ -1154,7 +1372,7 @@ client.on('messageCreate', async message => {
         const prompt = content.slice(5).trim();
         if (!prompt) return message.reply('Provide a command after `sudo`.');
         const processingMsg = await message.reply(`${LOADING_EMOJI} Processing: *"${prompt}"*`);
-        await processAICommand(prompt, processingMsg, message.guild);
+        await processAICommand(prompt, processingMsg, message.guild, message.channel.id);
     }
 });
 
