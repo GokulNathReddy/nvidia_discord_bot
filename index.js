@@ -871,10 +871,29 @@ const handlers = {
 };
 
 // ─── Permission Check ───────────────────────────────────────────────────────
+// Tiered access:
+//   1. Bot owner (OWNER_ID) → full access
+//   2. Server Administrator perm → full access
+//   3. Any moderation permission → access (ManageGuild, ManageChannels,
+//      ManageRoles, KickMembers, BanMembers, ModerateMembers, ManageMessages)
+const MOD_PERMISSIONS = [
+    PermissionsBitField.Flags.ManageGuild,
+    PermissionsBitField.Flags.ManageChannels,
+    PermissionsBitField.Flags.ManageRoles,
+    PermissionsBitField.Flags.KickMembers,
+    PermissionsBitField.Flags.BanMembers,
+    PermissionsBitField.Flags.ModerateMembers,
+    PermissionsBitField.Flags.ManageMessages
+];
+
 function hasPermission(member, authorId) {
+    // Bot owner always has access
     if (authorId === OWNER_ID) return true;
-    if (member?.permissions.has(PermissionsBitField.Flags.Administrator)) return true;
-    return false;
+    if (!member) return false;
+    // Full administrator
+    if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return true;
+    // Any moderation-level permission
+    return MOD_PERMISSIONS.some(perm => member.permissions.has(perm));
 }
 
 // ─── Reply helper ───────────────────────────────────────────────────────────
