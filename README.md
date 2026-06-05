@@ -1,9 +1,18 @@
 # Discord AI Moderator Bot
 
-A Discord bot that uses natural language processing to manage your server. Powered by Node.js, `discord.js` v14, and OpenRouter's Llama 3.1 253B.
+A Discord bot that uses natural language processing to manage your server. Powered by Node.js, `discord.js` v14, and OpenRouter (Gemini 2.5 Flash).
+
+## Features
+- **Natural language commands** — just describe what you want in plain English
+- **Multi-step sequences** — create a category, add channels to it, and create roles in one command
+- **Parallel execution** — independent tasks run simultaneously for speed
+- **Destructive action confirmation** — ban, kick, delete require button confirmation
+- **Rollback support** — undo the last action with `sudo rollback`
+- **Action history** — review recent operations with `sudo history`
+- **Smart model fallback** — cascades through multiple AI models if one fails
 
 ## Prerequisites
-- **Node.js**: Version 18.0.0 or higher is required (uses native `fetch`).
+- **Node.js**: Version 18.0.0 or higher (uses native `fetch`).
 - **Discord Bot**: Create an app in the [Discord Developer Portal](https://discord.com/developers/applications), and enable **Server Members Intent** and **Message Content Intent**.
 - **OpenRouter Account**: Get your API key from [OpenRouter](https://openrouter.ai/).
 
@@ -18,7 +27,7 @@ A Discord bot that uses natural language processing to manage your server. Power
    Copy `.env.example` and rename it to `.env`. Fill in the values:
    - `DISCORD_TOKEN`: Your Discord bot token.
    - `OPENROUTER_API_KEY`: Your OpenRouter API key.
-   - `OWNER_ID`: Your personal Discord User ID. The bot will *only* respond to this user.
+   - `OWNER_ID`: Your personal Discord User ID. The bot will *only* respond to this user (and server admins).
    - `COMMAND_CHANNEL_ID`: (Optional) Restrict the bot to only listen to commands in a specific channel by providing its ID. Leave blank to allow commands in any channel.
 
 3. **Start the bot**:
@@ -27,15 +36,36 @@ A Discord bot that uses natural language processing to manage your server. Power
    ```
 
 ## Usage
-Only the user matching `OWNER_ID` can control the bot.
-Send a natural language command to the bot in an allowed channel, for example:
-- "Create 5 text channels named dev-chat-1 to dev-chat-5"
-- "Create a category called Staff"
-- "Make a red role called Admin with hoist and mentionable permissions"
-- "Delete all channels matching the pattern chat-.*"
-- "Purge 100 messages in general"
-- "Set slowmode in general to 10 seconds"
-- "Lock the announcements channel"
-- "Ban user 123456789012345678 for spamming"
 
-Type `!help` in the server to see a detailed list of examples!
+### Text Commands
+Only the user matching `OWNER_ID` (or server Administrators) can control the bot.
+Send a natural language command prefixed with `sudo`:
+
+| Command | Example |
+|---------|---------|
+| Create channels | `sudo create 5 text channels called dev-1 to dev-5` |
+| Create categories | `sudo create a Gaming category` |
+| Rename channels | `sudo rename all channels with cool emojis` |
+| Delete channels | `sudo delete all channels matching "spam"` |
+| Create roles | `sudo create a red Admin role with hoist` |
+| Moderation | `sudo ban user 123456789 for spamming` |
+| Multi-step | `sudo create a Gaming category, add voice channels lobby and squad-1 inside it, and create a Gamer role in green` |
+| General Q&A | `sudo what is 2+2?` |
+
+### Slash Command
+Use `/mod_ai_agent` with the `prompt` option for the same functionality.
+
+### Built-in Commands
+- `sudo help` — Show the help menu
+- `sudo history` — View recent actions
+- `sudo rollback` — Undo the last reversible action
+
+## Model Stack
+The bot uses a cascading model strategy via OpenRouter:
+1. **Gemini 2.5 Flash** (primary) — best balance of speed, cost, and JSON reliability
+2. **Gemini 2.0 Flash** (fallback) — fast and reliable
+3. **Llama 3.3 70B** (free) — good free option
+4. **Qwen3 30B** (free) — last resort
+
+## License
+MIT
